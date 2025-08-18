@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>跨屏幕截图工具</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+            background: #f5f5f5;
+            margin: 0;
+        }
+        
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        
+        .capture-btn {
+            background: #4A90E2;
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 18px;
+            margin: 20px auto;
+            display: block;
+            transition: background 0.3s;
+        }
+        
+        .capture-btn:hover {
+            background: #357ABD;
+        }
+        
+        .capture-btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        
+        .info {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+            border-left: 4px solid #4A90E2;
+        }
+        
+        .info h3 {
+            color: #4A90E2;
+            margin-top: 0;
+        }
+        
+        .info p {
+            margin: 10px 0;
+            color: #666;
+        }
+        
+        .result {
+            margin-top: 30px;
+            text-align: center;
+        }
+        
+        .result img {
+            max-width: 100%;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        
+        .status {
+            text-align: center;
+            margin: 20px 0;
+            padding: 10px;
+            border-radius: 5px;
+        }
+        
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .status.warning {
+            background: #ed921c;
+            color: #155724;
+            border: 1px solid #b5b659;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🖥️ 跨屏幕截图工具</h1>
+        
+        <button id="captureBtn" class="capture-btn" onclick="startCapture()">
+            开始截图
+        </button>
+        
+        <button id="testBtn" class="capture-btn" onclick="testDesktopCapturer()" style="background: #28a745;">
+            测试截图功能
+        </button>
+        
+        <div class="info">
+            <h3>📋 使用说明</h3>
+            <p>1. 点击"开始截图"按钮（也可使用Command + Shift + K快捷键触发截图）</p>
+            <p>2. 在出现的半透明覆盖层上拖拽选择截图区域</p>
+            <p>3. 支持跨屏幕选择区域</p>
+            <p>4. 截图结果将显示在下方</p>
+            <p>5. 截图时可通过Esc键退出截图</p>
+        </div>
+        
+        <div id="status" class="status" style="display: none;"></div>
+        
+        <div id="result" class="result"></div>
+    </div>
+
+    <script>
+        function startCapture() {
+            const btn = document.getElementById('captureBtn');
+            const status = document.getElementById('status');
+            
+            // 检查截图功能是否可用
+            if (window.electronAPI && typeof window.electronAPI.startCapture === 'function') {
+                btn.disabled = true;
+                btn.textContent = '正在启动截图...';
+                
+                showStatus('正在启动截图工具...', 'success');
+                
+                try {
+                    window.electronAPI.startCapture();
+                } catch (error) {
+                    showStatus('启动截图失败: ' + error.message, 'error');
+                    btn.disabled = false;
+                    btn.textContent = '开始截图';
+                }
+            } else {
+                showStatus('截图功能未加载，请检查应用配置', 'error');
+            }
+        }
+        
+        async function testDesktopCapturer() {
+            const btn = document.getElementById('testBtn');
+            const status = document.getElementById('status');
+            
+            btn.disabled = true;
+            btn.textContent = '测试中...';
+            showStatus('正在测试截图功能...', 'success');
+            
+            try {
+                // 通过新的API测试
+                if (window.electronAPI && typeof window.electronAPI.testDesktopCapturer === 'function') {
+                    const result = await window.electronAPI.testDesktopCapturer();
+                    console.log('测试结果:', result);
+                    
+                    if (result.success) {
+                        showStatus(`测试成功！找到 ${result.sourceCount} 个屏幕源`, 'success');
+                        document.getElementById('result').innerHTML = `
+                            <h3>✅ 测试成功</h3>
+                            <p>找到 ${result.sourceCount} 个屏幕源</p>
+                            <ul>${result.sources.map(s => `<li>${s.name} (ID: ${s.id})</li>`).join('')}</ul>
+                        `;
+                    } else {
+                        showStatus('测试失败: ' + result.error, 'error');
+                        document.getElementById('result').innerHTML = `
+                            <h3>❌ 测试失败</h3>
+                            <p>错误: ${result.error}</p>
+                            <p>错误类型: ${result.errorType}</p>
+                        `;
+                    }
+                } else {
+                    showStatus('测试功能不可用', 'error');
+                }
+            } catch (error) {
+                showStatus('测试失败: ' + error.message, 'error');
+                document.getElementById('result').innerHTML = `
+                    <h3>❌ 测试失败</h3>
+                    <p>错误: ${error.message}</p>
+                `;
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '测试截图功能';
+            }
+        }
+        
+        function showStatus(message, type) {
+            const status = document.getElementById('status');
+            status.textContent = message;
+            status.className = `status ${type}`;
+            status.style.display = 'block';
+            
+            // 3秒后自动隐藏
+            setTimeout(() => {
+                status.style.display = 'none';
+            }, 3000);
+        }
+        
+        // 使用回调函数接收截图结果
+        // 注意：当 contextIsolation: true 时，不能直接使用 require
+        
+        // 设置截图结果回调函数
+        if (window.electronAPI && typeof window.electronAPI.setCaptureResultCallback === 'function') {
+            window.electronAPI.setCaptureResultCallback((data) => {
+                console.log('收到截图结果:', data);
+                
+                if (data.type === 'capture-result') {
+                    const result = document.getElementById('result');
+                    result.innerHTML = `
+                        <h3>📸 截图结果</h3>
+                        <img src="${data.dataUrl}" alt="截图结果" style="max-width: 100%; border: 2px solid #ddd; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+                        <div style="margin-top: 15px; text-align: center;">
+                            <button onclick="copyToClipboard('${data.dataUrl}')" class="capture-btn" style="background: #28a745; margin: 5px;">
+                                📋 复制到剪贴板
+                            </button>
+                            <button onclick="downloadImage('${data.dataUrl}')" class="capture-btn" style="background: #17a2b8; margin: 5px;">
+                                💾 下载图片
+                            </button>
+                        </div>
+                    `;
+                    
+                    const btn = document.getElementById('captureBtn');
+                    btn.disabled = false;
+                    btn.textContent = '开始截图';
+                    
+                    showStatus('截图完成！', 'success');
+                } else if (data.type === 'capture-error') {
+                    const btn = document.getElementById('captureBtn');
+                    btn.disabled = false;
+                    btn.textContent = '开始截图';
+                    
+                    showStatus('截图失败: ' + data.error, 'error');
+                    
+                    const result = document.getElementById('result');
+                    result.innerHTML = '<h3>❌ 截图失败</h3><p>错误信息: ' + data.error + '</p>';
+                } else if (data.type === 'capture-esc') {
+                    const btn = document.getElementById('captureBtn');
+                    btn.disabled = false;
+                    btn.textContent = '开始截图';
+                    
+                    showStatus('取消截图: ' + data.msg, 'warning');
+                }
+            });
+        }
+
+        // 复制图片到剪贴板
+        async function copyToClipboard(dataUrl) {
+            if (window.electronAPI && typeof window.electronAPI.copyImageToClipboard === 'function') {
+                try {
+                    const result = await window.electronAPI.copyImageToClipboard(dataUrl);
+                    if (result.success) {
+                        showStatus(result.message, 'success');
+                    } else {
+                        showStatus('复制失败: ' + result.error, 'error');
+                    }
+                } catch (error) {
+                    showStatus('复制失败: ' + error.message, 'error');
+                }
+            } else {
+                showStatus('复制功能不可用', 'error');
+            }
+        }
+
+        // 下载图片
+        function downloadImage(dataUrl) {
+            try {
+                const link = document.createElement('a');
+                link.download = `screenshot-${new Date().toISOString().replace(/[:.]/g, '-')}.png`;
+                link.href = dataUrl;
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                showStatus('图片下载开始', 'success');
+            } catch (error) {
+                showStatus('下载失败: ' + error.message, 'error');
+            }
+        }
+        
+        // 页面加载完成后检查功能
+        window.addEventListener('load', function() {
+            if (window.electronAPI && typeof window.electronAPI.startCapture === 'function') {
+                showStatus('截图功能已就绪', 'success');
+            } else {
+                showStatus('等待截图功能加载...', 'error');
+            }
+        });
+    </script>
+</body>
+</html> 

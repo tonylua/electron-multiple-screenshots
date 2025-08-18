@@ -1,0 +1,54 @@
+{
+  "name": "electron-multiple-screenshots",
+  "version": "1.0.0",
+  "main": "main.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "electron .",
+    "build": "electron-builder",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder"
+  },
+  "keywords": [
+    "electron",
+    "electron screenshots",
+    "capture",
+    "multi screens shotcut"
+  ],
+  "author": "Ethan",
+  "license": "MIT",
+  "description": "基于Electron实现的跨屏幕截图工具的Demo，不仅支持多屏幕截图，还支持跨屏幕截图",
+  "devDependencies": {
+    "electron": "^37.3.0",
+    "electron-builder": "^24.13.3"
+  },
+  "homepage": "git@github.com:ethan2478/electron-multiple-screenshots.git",
+  "build": {
+    "appId": "com.example.screenshots-all",
+    "productName": "跨屏幕截图工具",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "**/*",
+      "!node_modules/**/*",
+      "!dist/**/*",
+      "!*.log"
+    ],
+    "mac": {
+      "category": "public.app-category.utilities",
+      "hardenedRuntime": true,
+      "entitlements": "entitlements.mac.plist",
+      "entitlementsInherit": "entitlements.mac.plist",
+      "target": [
+        {
+          "target": "default",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ]
+    }
+  }
+}

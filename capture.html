@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body, html {
+      margin: 0;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.3);
+      cursor: crosshair;
+      user-select: none;
+    }
+    #rect {
+      position: absolute;
+      border: 2px solid #4A90E2;
+      background: rgba(74, 144, 226, 0.3);
+    }
+    #crossDisplayRect {
+      position: absolute;
+      border: 2px dashed #FF6B6B;
+      background: rgba(255, 107, 107, 0.2);
+      pointer-events: none;
+    }
+    #debug {
+      position: fixed;
+      top: 10px;
+      left: 10px;
+      background: rgba(0, 0, 0, 0.8);
+      color: white;
+      padding: 10px;
+      border-radius: 5px;
+      font-family: monospace;
+      font-size: 12px;
+      z-index: 1000;
+    }
+  </style>
+</head>
+<body>
+  <div id="rect"></div>
+  <div id="crossDisplayRect"></div>
+  <div id="debug"></div>
+  <script>
+    let isDown = false, startX, startY;
+    let crossDisplayDrag = false;
+    const rect = document.getElementById('rect');
+    const crossDisplayRect = document.getElementById('crossDisplayRect');
+    const debug = document.getElementById('debug');
+
+    // 等待主进程传递显示器信息
+    let currentDisplay = null;
+    let displayIndex = 0;
+    let allDisplays = [];
+    let totalDisplays = 0;
+
+    // 检查是否已收到显示器信息
+    function checkDisplayInfo() {
+      if (window.currentDisplay && window.displayIndex !== undefined && window.totalDisplays !== undefined) {
+        currentDisplay = window.currentDisplay;
+        displayIndex = window.displayIndex;
+        totalDisplays = window.totalDisplays;
+        
+        // 通过API获取显示器信息
+        if (window.electronAPI && typeof window.electronAPI.getDisplays === 'function') {
+          window.electronAPI.getDisplays().then(displays => {
+            allDisplays = displays;
+            updateDebugInfo();
+            console.log(`截图窗口 ${displayIndex + 1} 初始化完成:`, currentDisplay);
+          }).catch(error => {
+            console.error('获取显示器信息失败:', error);
+          });
+        } else {
+          updateDebugInfo();
+          console.log(`截图窗口 ${displayIndex + 1} 初始化完成:`, currentDisplay);
+        }
+      } else {
+        setTimeout(checkDisplayInfo, 100);
+      }
+    }
+
+    function updateDebugInfo() {
+      if (!currentDisplay) return;
+      
+      debug.innerHTML = `
+        当前显示器: ${displayIndex + 1}<br>
+        位置: (${currentDisplay.bounds.x}, ${currentDisplay.bounds.y})<br>
+        大小: ${currentDisplay.bounds.width} x ${currentDisplay.bounds.height}<br>
+        窗口大小: ${window.innerWidth} x ${window.innerHeight}<br>
+        总显示器数: ${totalDisplays}
+      `;
+    }
+
+    // 开始检查显示器信息
+    checkDisplayInfo();
+
+    document.addEventListener('mousedown', e => {
+      if (!currentDisplay) return;
+      
+      isDown = true;
+      startX = e.clientX;
+      startY = e.clientY;
+      rect.style.left = startX + 'px';
+      rect.style.top = startY + 'px';
+      rect.style.width = 0;
+      rect.style.height = 0;
+      
+      // 通知其他显示器开始拖拽
+      if (totalDisplays > 1 && window.electronAPI && typeof window.electronAPI.sendStartDrag === 'function') {
+        window.electronAPI.sendStartDrag({
+          displayIndex: displayIndex,
+          startX: startX + currentDisplay.bounds.x,
+          startY: startY + currentDisplay.bounds.y
+        });
+      }
+    });
+
+    document.addEventListener('mousemove', e => {
+      if (!isDown || !currentDisplay) return;
+      
+      let x = Math.min(e.clientX, startX);
+      let y = Math.min(e.clientY, startY);
+      let w = Math.abs(e.clientX - startX);
+      let h = Math.abs(e.clientY - startY);
+      
+      rect.style.left = x + 'px';
+      rect.style.top = y + 'px';
+      rect.style.width = w + 'px';
+      rect.style.height = h + 'px';
+      
+      // 通知其他显示器更新拖拽状态
+      if (totalDisplays > 1 && window.electronAPI && typeof window.electronAPI.sendUpdateDrag === 'function') {
+        window.electronAPI.sendUpdateDrag({
+          displayIndex: displayIndex,
+          x: x + currentDisplay.bounds.x,
+          y: y + currentDisplay.bounds.y,
+          width: w,
+          height: h
+        });
+      }
+    });
+
+    document.addEventListener('mouseup', e => {
+      if (!isDown || !currentDisplay) return;
+      
+      isDown = false;
+      crossDisplayDrag = false;
+      
+      // 隐藏跨显示器选择框
+      crossDisplayRect.style.display = 'none';
+      
+      // 计算相对于当前显示器的坐标
+      let localX = parseInt(rect.style.left);
+      let localY = parseInt(rect.style.top);
+      let w = parseInt(rect.style.width);
+      let h = parseInt(rect.style.height);
+      
+      // 转换为全局坐标
+      let globalX = localX + currentDisplay.bounds.x;
+      let globalY = localY + currentDisplay.bounds.y;
+      
+      console.log('本地坐标:', { localX, localY, width: w, height: h });
+      console.log('全局坐标:', { globalX, globalY, width: w, height: h });
+      console.log('当前显示器:', currentDisplay.bounds);
+      
+      // 发送截图区域信息
+      if (window.electronAPI && typeof window.electronAPI.sendCaptureRegion === 'function') {
+        window.electronAPI.sendCaptureRegion({ 
+          x: globalX, 
+          y: globalY, 
+          width: w, 
+          height: h,
+          displayIndex: displayIndex,
+          localBounds: { x: localX, y: localY, width: w, height: h }
+        });
+      }
+    });
+
+    // 监听来自主进程的显示器信息更新
+    window.addEventListener('message', function(e) {
+      if (e.data.type === 'update-display') {
+        currentDisplay = e.data.display;
+        displayIndex = e.data.index;
+        updateDebugInfo();
+      }
+    });
+
+    // 监听跨显示器拖拽事件
+    if (window.electronAPI && typeof window.electronAPI.onCrossDisplayDragStart === 'function') {
+      window.electronAPI.onCrossDisplayDragStart((startInfo) => {
+        if (startInfo.displayIndex === displayIndex) return;
+        
+        crossDisplayDrag = true;
+        const globalStartX = startInfo.startX;
+        const globalStartY = startInfo.startY;
+        
+        // 转换为当前显示器的本地坐标
+        const localStartX = globalStartX - currentDisplay.bounds.x;
+        const localStartY = globalStartY - currentDisplay.bounds.y;
+        
+        crossDisplayRect.style.left = localStartX + 'px';
+        crossDisplayRect.style.top = localStartY + 'px';
+        crossDisplayRect.style.width = '0';
+        crossDisplayRect.style.height = '0';
+        crossDisplayRect.style.display = 'block';
+      });
+    }
+
+    if (window.electronAPI && typeof window.electronAPI.onCrossDisplayDragUpdate === 'function') {
+      window.electronAPI.onCrossDisplayDragUpdate((dragInfo) => {
+        if (dragInfo.displayIndex === displayIndex) return;
+        
+        if (crossDisplayDrag) {
+          // 转换为当前显示器的本地坐标
+          const localX = dragInfo.x - currentDisplay.bounds.x;
+          const localY = dragInfo.y - currentDisplay.bounds.y;
+          const localStartX = dragInfo.x - dragInfo.width - currentDisplay.bounds.x;
+          const localStartY = dragInfo.y - dragInfo.height - currentDisplay.bounds.y;
+          
+          crossDisplayRect.style.left = Math.min(localX, localStartX) + 'px';
+          crossDisplayRect.style.top = Math.min(localY, localStartY) + 'px';
+          crossDisplayRect.style.width = Math.abs(localX - localStartX) + 'px';
+          crossDisplayRect.style.height = Math.abs(localY - localStartY) + 'px';
+        }
+      });
+    }
+  </script>
+</body>
+</html>
