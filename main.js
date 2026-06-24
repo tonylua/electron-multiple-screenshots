@@ -160,6 +160,14 @@ ipcMain.on('open-capture', () => {
     // scaleFactor 重新换算，从而铺满整块屏幕。
     captureWindow.setBounds(display.bounds);
 
+    // 修复「部分窗口（含本应用窗口）在 z 轴上盖过选区遮罩」的问题：
+    // 默认 alwaysOnTop 用的是 'floating' 级别，在 Windows 上不足以盖住
+    // 本应用主窗口、其它置顶窗口、任务栏等。改用最高的 'screen-saver'
+    // 级别，并主动置顶 + 聚焦，确保遮罩位于所有内容之上。
+    captureWindow.setAlwaysOnTop(true, 'screen-saver');
+    captureWindow.moveTop();
+    captureWindow.focus();
+
     captureWindow.loadFile('capture.html');
 
     // 传递显示器信息到渲染进程
@@ -416,8 +424,8 @@ ipcMain.handle('copy-image-to-clipboard', async (event, dataUrl) => {
 
 // 注册截图快捷键
 function registerScreenshotShortcut() {
-  // 截图的快捷键
-  const SCREENSHOT_SHORTCUT_KEY = 'Command+Shift+K';
+  // 截图的快捷键（CommandOrControl 让 Windows 上自动映射为 Ctrl）
+  const SCREENSHOT_SHORTCUT_KEY = 'CommandOrControl+Shift+K';
   // 取消截图快捷键
   const ESC_SCREENSHOT_SHORTCUT_KEY = 'Esc';
 

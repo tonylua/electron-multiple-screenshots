@@ -25,39 +25,65 @@ ipcRenderer.on('do-capture', async (e, rect) => {
       return;
     }
 
-    // 计算虚拟桌面边界
+    // 计算虚拟桌面边界（DIP 逻辑像素）
     const minX = Math.min(...displays.map(d => d.bounds.x));
     const minY = Math.min(...displays.map(d => d.bounds.y));
     const maxX = Math.max(...displays.map(d => d.bounds.x + d.bounds.width));
     const maxY = Math.max(...displays.map(d => d.bounds.y + d.bounds.height));
 
-    const totalWidth = maxX - minX;
-    const totalHeight = maxY - minY;
+    const totalWidth = maxX - minX;   // DIP
+    const totalHeight = maxY - minY;  // DIP
 
-    console.log('虚拟桌面边界:', { minX, minY, maxX, maxY, totalWidth, totalHeight });
+    // 关键修复：desktopCapturer 抓到的视频是「物理像素」，而 display.bounds 是
+    // 「DIP 逻辑像素」。若直接把物理像素的视频画进 DIP 尺寸的画布，HiDPI 屏会被
+    // 降采样导致截图模糊；Windows 笔记本默认 125%/150% 缩放几乎必现。
+    // 这里统一用所有屏中最大的 scaleFactor 作为画布的物理倍率，保证最高密度的
+    // 那块屏不丢分辨率，其余屏放大到同一坐标系，几何上也始终对齐。
+    const globalScale = Math.max(...displays.map(d => d.scaleFactor || 1));
 
-    // 创建虚拟大画布
+    console.log('虚拟桌面边界:', { minX, minY, maxX, maxY, totalWidth, totalHeight, globalScale });
+
+    // 创建虚拟大画布（物理像素）
     let canvas = document.createElement('canvas');
-    canvas.width = totalWidth;
-    canvas.height = totalHeight;
+    canvas.width = Math.round(totalWidth * globalScale);
+    canvas.height = Math.round(totalHeight * globalScale);
     let ctx = canvas.getContext('2d');
 
     // 先填充黑色背景，便于调试
     ctx.fillStyle = 'black';
-    ctx.fillRect(0, 0, totalWidth, totalHeight);
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     // 遍历屏幕源，拼接到虚拟画布
     for (let i = 0; i < sources.length; i++) {
       const source = sources[i];
-      const display = displays[i]; // 按索引顺序匹配
-      
+
+      // 修复：desktopCapturer 返回的屏幕顺序不保证与 getAllDisplays 一致，
+      // 按数组下标硬匹配会导致多屏错位。优先用 display_id 精确匹配
+      // （source.display_id 是字符串，display.id 是数字，需转字符串比较），
+      // 匹配不到时再退回下标。
+      let display = displays.find(
+        d => source.display_id && String(d.id) === String(source.display_id)
+      );
+      if (!display) {
+        display = displays[i];
+        if (display) {
+          console.warn(`第 ${i + 1} 个屏幕源无法用 display_id 匹配，退回下标匹配`);
+        }
+      }
+
       console.log(`处理第 ${i + 1} 个屏幕源:`, source.name);
       console.log(`对应显示器:`, display ? display.bounds : '未找到');
-      
+
       if (!display) {
         console.warn(`第 ${i + 1} 个屏幕源没有对应的显示器`);
         continue;
       }
+
+      // 该屏在大画布中的目标矩形（物理像素）
+      const destX = Math.round((display.bounds.x - minX) * globalScale);
+      const destY = Math.round((display.bounds.y - minY) * globalScale);
+      const destW = Math.round(display.bounds.width * globalScale);
+      const destH = Math.round(display.bounds.height * globalScale);
 
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
@@ -83,19 +109,15 @@ ipcRenderer.on('do-capture', async (e, rect) => {
             clearTimeout(timeout);
             try {
               await video.play();
-              
+
               console.log(`绘制屏幕 ${i + 1} 到画布:`, {
-                sourceBounds: { x: display.bounds.x - minX, y: display.bounds.y - minY, width: display.bounds.width, height: display.bounds.height },
+                dest: { x: destX, y: destY, width: destW, height: destH },
                 videoSize: { width: video.videoWidth, height: video.videoHeight }
               });
 
-              ctx.drawImage(
-                video,
-                display.bounds.x - minX,
-                display.bounds.y - minY,
-                display.bounds.width,
-                display.bounds.height
-              );
+              // 把整段视频（物理像素）缩放绘制到目标矩形，
+              // globalScale >= 该屏 scaleFactor 时不丢分辨率。
+              ctx.drawImage(video, destX, destY, destW, destH);
 
               stream.getTracks().forEach(t => t.stop());
               resolve();
@@ -115,23 +137,22 @@ ipcRenderer.on('do-capture', async (e, rect) => {
       }
     }
 
-    // 按选区裁剪
-    const cropCanvas = document.createElement('canvas');
-    cropCanvas.width = rect.width;
-    cropCanvas.height = rect.height;
-    
-    // 确保裁剪坐标在画布范围内
-    const cropX = Math.max(0, rect.x - minX);
-    const cropY = Math.max(0, rect.y - minY);
-    const cropWidth = Math.min(rect.width, totalWidth - cropX);
-    const cropHeight = Math.min(rect.height, totalHeight - cropY);
-    
-    console.log('裁剪参数:', { cropX, cropY, cropWidth, cropHeight });
-    
+    // 按选区裁剪（rect 为 DIP 全局坐标，统一乘 globalScale 转物理像素）
+    const cropX = Math.max(0, Math.round((rect.x - minX) * globalScale));
+    const cropY = Math.max(0, Math.round((rect.y - minY) * globalScale));
+    const cropWidth = Math.min(Math.round(rect.width * globalScale), canvas.width - cropX);
+    const cropHeight = Math.min(Math.round(rect.height * globalScale), canvas.height - cropY);
+
+    console.log('裁剪参数(物理像素):', { cropX, cropY, cropWidth, cropHeight });
+
     if (cropWidth <= 0 || cropHeight <= 0) {
       throw new Error('裁剪区域无效');
     }
-    
+
+    const cropCanvas = document.createElement('canvas');
+    cropCanvas.width = cropWidth;
+    cropCanvas.height = cropHeight;
+
     cropCanvas
       .getContext('2d')
       .drawImage(canvas, cropX, cropY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
