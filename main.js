@@ -151,6 +151,15 @@ ipcMain.on('open-capture', () => {
     });
 
     captureWindow.setIgnoreMouseEvents(false);
+
+    // 修复多显示器不同 DPI 缩放下的窗口尺寸/比例错误：
+    // 构造函数里 width/height 会用「窗口首次创建所在显示器」(通常是主屏)
+    // 的 scaleFactor 把 DIP 换算成物理像素，窗口移动到副屏后物理尺寸已经定型，
+    // 导致在缩放比例不同的副屏上覆盖层比实际屏幕小、比例不对。
+    // 窗口落到目标显示器后再次 setBounds，Electron 会用该显示器正确的
+    // scaleFactor 重新换算，从而铺满整块屏幕。
+    captureWindow.setBounds(display.bounds);
+
     captureWindow.loadFile('capture.html');
 
     // 传递显示器信息到渲染进程
