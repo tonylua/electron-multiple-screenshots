@@ -1,0 +1,5 @@
+# MSVC 目标的链接参数由 napi-sys / napi-build 自动注入（含 /DELAYLOAD:node.exe，
+# 使 napi 符号在运行时由宿主 Electron/Node 解析）。此处无需手动指定 link-args。
+#
+# 构建务必在已加载 MSVC 环境的 shell 中进行（vcvars64.bat），
+# 否则 link.exe 可能解析到 Git 自带的 coreutils link 导致链接失败。

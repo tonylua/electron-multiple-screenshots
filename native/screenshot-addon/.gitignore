@@ -1,0 +1,13 @@
+/target
+node_modules
+*.node
+
+# napi-rs 生成物（由 napi build 生成，不入库）
+index.js
+index.d.ts
+
+# 构建/调试残留
+*.pdb
+*.exp
+*.lib
+Cargo.lock

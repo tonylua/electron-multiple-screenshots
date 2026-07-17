@@ -1,0 +1,26 @@
+{
+  "name": "@magicenter/screenshot-addon",
+  "version": "0.1.0",
+  "description": "DXGI Desktop Duplication based screen capture native addon for MagiCenter",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "napi": {
+    "name": "screenshot",
+    "triples": {
+      "defaults": false,
+      "additional": ["x86_64-pc-windows-msvc"]
+    }
+  },
+  "scripts": {
+    "build": "napi build --platform --release",
+    "build:debug": "napi build --platform",
+    "artifacts": "napi artifacts",
+    "version": "napi version"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^2.18.4"
+  },
+  "engines": {
+    "node": ">= 20"
+  }
+}

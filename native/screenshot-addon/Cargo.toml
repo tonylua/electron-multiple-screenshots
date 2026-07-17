@@ -1,0 +1,40 @@
+[package]
+name = "screenshot"
+version = "0.1.0"
+edition = "2021"
+authors = ["luanluan1"]
+description = "DXGI Desktop Duplication based screen capture native addon for Electron (Windows)"
+license = "MIT"
+
+[lib]
+# napi 原生 addon 必须是 cdylib；产物 .dll 由 @napi-rs/cli 重命名为 *.node
+crate-type = ["cdylib"]
+
+[dependencies]
+# napi 2.x：对接 Electron 37 (Node ABI 128 / N-API 9)
+napi = { version = "2", default-features = false, features = ["napi9"] }
+napi-derive = "2"
+
+[dependencies.windows]
+version = "0.58"
+features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Dxgi",
+  "Win32_Graphics_Dxgi_Common",
+  "Win32_Graphics_Direct3D",
+  "Win32_Graphics_Direct3D11",
+  "Win32_Graphics_Gdi",
+  "Win32_UI_HiDpi",
+  "Win32_UI_WindowsAndMessaging",
+]
+
+[build-dependencies]
+napi-build = "2"
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
+strip = true
+# 注意：不要设 panic = "abort"。napi 依赖 unwind 把 Rust panic 转成 JS 异常；
+# abort 会让任何 panic 直接杀掉整个 Electron 进程，违背「addon 绝不搞崩宿主」的原则。

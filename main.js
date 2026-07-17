@@ -1,123 +1,38 @@
 const {
-  app, BrowserWindow, ipcMain, screen,
-  desktopCapturer, systemPreferences, globalShortcut,
+  app,
+  BrowserWindow,
+  ipcMain,
+  screen,
+  nativeImage,
+  globalShortcut,
 } = require('electron');
 const path = require('path');
+const { loadScreenshotAddon, disposeScreenshotAddon } = require('./screenshotAddon');
 
 let mainWindow;
 let captureWindows = [];
 
 app.on('ready', async () => {
-  // 检查屏幕录制权限
-  if (process.platform === 'darwin') {
-    const hasScreenAccess = systemPreferences.getMediaAccessStatus('screen');
-    console.log('屏幕录制权限状态:', hasScreenAccess);
-    
-    if (hasScreenAccess !== 'granted') {
-      console.log('请求屏幕录制权限...');
-      try {
-        const granted = await systemPreferences.askForMediaAccess('screen');
-        console.log('屏幕录制权限请求结果:', granted);
-        
-        if (!granted) {
-          console.log('权限被拒绝，尝试其他方法...');
-          // 在开发模式下，尝试使用系统截图作为备选方案
-          await checkSystemScreenshotPermission();
-        }
-      } catch (error) {
-        console.error('请求屏幕录制权限失败:', error);
-        await checkSystemScreenshotPermission();
-      }
-    }
-  }
-
   registerScreenshotShortcut();
 
   mainWindow = new BrowserWindow({
     width: 800,
     height: 600,
-    webPreferences: { 
+    webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
       contextIsolation: true,
-      enableRemoteModule: false
-    }
+      enableRemoteModule: false,
+    },
   });
 
   mainWindow.loadFile('index.html');
-
   mainWindow.webContents.openDevTools({ mode: 'right' });
 });
 
-// 检查系统截图权限
-async function checkSystemScreenshotPermission() {
-  try {
-    console.log('检查系统截图权限...');
-    
-    // 尝试使用系统命令检查权限
-    const { exec } = require('child_process');
-    const { promisify } = require('util');
-    const execAsync = promisify(exec);
-    
-    try {
-      // 检查是否有屏幕录制权限
-      const { stdout } = await execAsync('tccutil query ScreenCapture com.apple.Terminal');
-      console.log('系统截图权限检查结果:', stdout);
-      
-      if (stdout.includes('allowed')) {
-        console.log('系统截图权限已授予');
-        return true;
-      } else {
-        console.log('系统截图权限未授予，需要手动授权');
-        showPermissionInstructions();
-        return false;
-      }
-    } catch (error) {
-      console.log('无法检查系统权限，可能需要手动授权');
-      showPermissionInstructions();
-      return false;
-    }
-  } catch (error) {
-    console.error('检查系统截图权限失败:', error);
-    return false;
-  }
-}
-
-// 显示权限授权说明
-function showPermissionInstructions() {
-  const instructions = `
-    🚨 需要屏幕录制权限！
-    
-    请按以下步骤操作：
-    
-    1. 打开 系统偏好设置 > 安全性与隐私 > 隐私
-    2. 选择左侧的 "屏幕录制"
-    3. 点击锁图标解锁设置
-    4. 找到并勾选以下应用之一：
-       - Terminal (如果通过终端启动)
-       - 或者重新构建应用包后使用
-    
-    或者，你可以：
-    1. 运行 npm run pack 构建应用包
-    2. 在 dist/mac 目录中找到 .app 文件
-    3. 双击运行，系统会提示授权
-    
-    注意：开发模式下直接运行 electron . 可能无法获得正确权限
-  `;
-  
-  console.log(instructions);
-  
-  // 如果主窗口已创建，显示通知
-  if (mainWindow) {
-    mainWindow.webContents.executeJavaScript(`
-      alert(\`${instructions.replace(/\n/g, '\\n')}\`);
-    `);
-  }
-}
-
-ipcMain.on('open-capture', () => {
+ipcMain.on('open-capture', async () => {
   // 关闭之前的截图窗口
-  captureWindows.forEach(win => {
+  captureWindows.forEach((win) => {
     if (win && !win.isDestroyed()) {
       win.close();
     }
@@ -126,6 +41,17 @@ ipcMain.on('open-capture', () => {
 
   const displays = screen.getAllDisplays();
   console.log('创建截图窗口，显示器数量:', displays.length);
+
+  // 【预热】提前 prime DXGI 会话，避免首次抓帧 ~200ms 的 priming 延迟
+  const addon = loadScreenshotAddon();
+  if (addon && typeof addon.primeDisplays === 'function') {
+    try {
+      const primed = await addon.primeDisplays();
+      console.log('[screenshot-addon] DXG 会话预热完成，屏数:', primed);
+    } catch (e) {
+      console.warn('[screenshot-addon] 预热失败（忽略）:', e.message);
+    }
+  }
 
   // 为每个显示器创建截图窗口
   displays.forEach((display, index) => {
@@ -146,24 +72,23 @@ ipcMain.on('open-capture', () => {
         preload: path.join(__dirname, 'preload.js'),
         nodeIntegration: false,
         contextIsolation: true,
-        enableRemoteModule: false
-      }
+        enableRemoteModule: false,
+      },
     });
 
     captureWindow.setIgnoreMouseEvents(false);
 
-    // 修复多显示器不同 DPI 缩放下的窗口尺寸/比例错误：
-    // 构造函数里 width/height 会用「窗口首次创建所在显示器」(通常是主屏)
-    // 的 scaleFactor 把 DIP 换算成物理像素，窗口移动到副屏后物理尺寸已经定型，
-    // 导致在缩放比例不同的副屏上覆盖层比实际屏幕小、比例不对。
-    // 窗口落到目标显示器后再次 setBounds，Electron 会用该显示器正确的
-    // scaleFactor 重新换算，从而铺满整块屏幕。
+    // 修复多显示器不同 DPI 缩放下的窗口尺寸/比例错误
     captureWindow.setBounds(display.bounds);
 
-    // 修复「部分窗口（含本应用窗口）在 z 轴上盖过选区遮罩」的问题：
-    // 默认 alwaysOnTop 用的是 'floating' 级别，在 Windows 上不足以盖住
-    // 本应用主窗口、其它置顶窗口、任务栏等。改用最高的 'screen-saver'
-    // 级别，并主动置顶 + 聚焦，确保遮罩位于所有内容之上。
+    // 内容保护：排除自己的窗口，避免抓帧时把自己抓进去
+    try {
+      captureWindow.setContentProtection(true);
+    } catch (e) {
+      console.warn('setContentProtection 失败:', e.message);
+    }
+
+    // 置顶层级：screen-saver 级，确保盖住其他窗口
     captureWindow.setAlwaysOnTop(true, 'screen-saver');
     captureWindow.moveTop();
     captureWindow.focus();
@@ -193,141 +118,140 @@ ipcMain.on('open-capture', () => {
   console.log(`创建了 ${captureWindows.length} 个截图窗口`);
 });
 
-// 添加一个简单的测试IPC处理
-ipcMain.handle('test-desktop-capturer', async () => {
-  try {
-    console.log('=== 测试 desktopCapturer ===');
-    console.log('desktopCapturer 对象存在:', !!desktopCapturer);
-    console.log('desktopCapturer 类型:', typeof desktopCapturer);
-    console.log('getSources 方法存在:', !!desktopCapturer.getSources);
-    console.log('getSources 方法类型:', typeof desktopCapturer.getSources);
-    
-    if (!desktopCapturer || typeof desktopCapturer.getSources !== 'function') {
-      throw new Error('desktopCapturer 或 getSources 方法不可用');
-    }
-    
-    // 尝试最简单的调用
-    console.log('尝试最简单的 getSources 调用...');
-    const sources = await desktopCapturer.getSources({ types: ['screen'] });
-    console.log('成功获取屏幕源，数量:', sources.length);
-    
-    return {
-      success: true,
-      sourceCount: sources.length,
-      sources: sources.map(s => ({ id: s.id, name: s.name }))
-    };
-    
-  } catch (error) {
-    console.error('测试 desktopCapturer 失败:', error);
-    return {
-      success: false,
-      error: error.message || '未知错误',
-      errorType: typeof error,
-      errorObject: error
-    };
+// 【截图·核心】用 addon 抓单屏，裁剪出选区；主进程完成，无需 getUserMedia/desktopCapturer
+async function captureWithAddon(area, displays) {
+  const addon = loadScreenshotAddon();
+  if (!addon) {
+    throw new Error('screenshot_addon 未加载');
   }
-});
 
-// 添加获取显示器信息的IPC处理
-ipcMain.handle('get-displays', () => {
-  try {
-    const displays = screen.getAllDisplays();
-    console.log('获取显示器信息成功，数量:', displays.length);
-    
-    return displays.map(display => ({
-      id: display.id,
-      bounds: display.bounds,
-      workArea: display.workArea,
-      scaleFactor: display.scaleFactor,
-      rotation: display.rotation,
-      internal: display.internal
-    }));
-  } catch (error) {
-    console.error('获取显示器信息失败:', error);
-    throw error;
-  }
-});
+  // 1) 用坐标命中目标显示器（选区起点位于哪块屏）
+  const targetDisplay = displays.find((d) => {
+    const b = d.bounds;
+    return area.x >= b.x && area.x < b.x + b.width && area.y >= b.y && area.y < b.y + b.height;
+  }) || displays[0];
 
-// 添加获取屏幕源的IPC处理
-ipcMain.handle('get-screen-sources', async () => {
-  try {
-    console.log('开始获取屏幕源...');
-    console.log('desktopCapturer 对象:', desktopCapturer);
-    console.log('desktopCapturer.getSources 方法:', typeof desktopCapturer.getSources);
-    
-    // 检查是否有屏幕录制权限
-    console.log('尝试第一次获取屏幕源...');
-    const hasScreenAccess = await desktopCapturer.getSources({ types: ['screen'], fetchWindowIcons: false });
-    console.log('第一次获取成功，数量:', hasScreenAccess.length);
-    
-    // 重新获取详细的屏幕源信息
-    console.log('尝试第二次获取屏幕源...');
-    const sources = await desktopCapturer.getSources({ 
-      types: ['screen'], 
-      fetchWindowIcons: false,
-      thumbnailSize: { width: 0, height: 0 } // 不获取缩略图以提高性能
-    });
-    
-    console.log('第二次获取成功，数量:', sources.length);
-    
-    const result = sources.map(source => ({
-      id: source.id,
-      name: source.name,
-      display_id: source.display_id
-    }));
-    
-    console.log('处理后的屏幕源:', result);
-    return result;
-    
-  } catch (error) {
-    console.error('获取屏幕源失败:', error);
-    console.error('错误类型:', typeof error);
-    console.error('错误对象:', error);
-    console.error('错误堆栈:', error.stack);
-    
-    // 如果 desktopCapturer 失败，尝试使用系统截图
-    console.log('尝试使用系统截图作为备选方案...');
-    return await trySystemScreenshot();
+  if (!targetDisplay) {
+    throw new Error('未找到目标显示器');
   }
-});
 
-// 尝试使用系统截图
-async function trySystemScreenshot() {
-  try {
-    console.log('使用系统截图功能...');
-    
-    // 在 macOS 上，我们可以使用系统命令来截图
-    if (process.platform === 'darwin') {
-      const { exec } = require('child_process');
-      const { promisify } = require('util');
-      const execAsync = promisify(exec);
-      
-      // 获取桌面路径
-      const desktopPath = path.join(require('os').homedir(), 'Desktop');
-      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const screenshotPath = path.join(desktopPath, `screenshot-${timestamp}.png`);
-      
-      // 使用系统截图命令
-      await execAsync(`screencapture -x "${screenshotPath}"`);
-      
-      console.log('系统截图成功:', screenshotPath);
-      
-      // 返回一个模拟的屏幕源，表示使用系统截图
-      return [{
-        id: 'system-screenshot',
-        name: 'System Screenshot',
-        display_id: 'system',
-        systemPath: screenshotPath
-      }];
-    }
-    
-    throw new Error('当前平台不支持系统截图');
-    
-  } catch (error) {
-    console.error('系统截图也失败:', error);
-    throw new Error('无法获取屏幕源，请检查权限设置或使用系统截图功能');
+  // 2) 用 addon 枚举并匹配本屏（nativeOrigin 与 addon 的 left/top 匹配更鲁棒）
+  const addonDisplays = addon.listDisplays();
+  let matched = null;
+
+  // 优先用 nativeOrigin（Electron 给出的物理原点）匹配 addon 的物理坐标
+  const origin = targetDisplay.nativeOrigin;
+  if (origin && typeof origin.x === 'number') {
+    matched = addonDisplays.find((a) => a.left === origin.x && a.top === origin.y);
   }
+  // 其次用 DIP bounds（在 100% 缩放时一致）
+  if (!matched) {
+    matched = addonDisplays.find(
+      (a) => a.left === targetDisplay.bounds.x && a.top === targetDisplay.bounds.y
+    );
+  }
+  if (!matched) {
+    // 兜底：按数组下标（多屏顺序通常一致）
+    const idx = displays.indexOf(targetDisplay);
+    matched = addonDisplays[idx];
+  }
+
+  if (!matched) {
+    throw new Error(`addon 未匹配到显示器: ${targetDisplay.id}`);
+  }
+
+  // 3) 抓帧（异步，工作线程执行，不阻塞主进程）
+  const frame = await addon.captureFrame(matched.deviceName, { timeoutMs: 300 });
+  if (!frame || !frame.data || frame.width <= 0 || frame.height <= 0) {
+    throw new Error('addon 抓帧失败或返回空帧');
+  }
+
+  // 4) 构建 NativeImage（BGRA8 紧凑 Buffer，直接可用）
+  let image = nativeImage.createFromBitmap(frame.data, {
+    width: frame.width,
+    height: frame.height,
+  });
+
+  // 5) 裁剪：把全局坐标选区换算到本屏像素坐标
+  // 缩放系数 = 物理帧尺寸 / DIP bounds（addon 返回物理像素，Electron bounds 是 DIP）
+  const scaleX = frame.width / targetDisplay.bounds.width;
+  const scaleY = frame.height / targetDisplay.bounds.height;
+
+  const localX = Math.max(0, Math.floor((area.x - targetDisplay.bounds.x) * scaleX));
+  const localY = Math.max(0, Math.floor((area.y - targetDisplay.bounds.y) * scaleY));
+  const cropW = Math.max(1, Math.floor(area.width * scaleX));
+  const cropH = Math.max(1, Math.floor(area.height * scaleY));
+
+  const boundedW = Math.min(cropW, Math.max(0, frame.width - localX));
+  const boundedH = Math.min(cropH, Math.max(0, frame.height - localY));
+
+  if (boundedW <= 0 || boundedH <= 0) {
+    throw new Error('裁剪区域超出截图边界');
+  }
+
+  const cropped = image.crop({ x: localX, y: localY, width: boundedW, height: boundedH });
+  return cropped.toDataURL();
 }
+
+ipcMain.on('capture-region', async (event, rect) => {
+  console.log('收到截图区域:', rect);
+
+  // 关闭所有截图窗口（已经抓到帧，尽早关闭 UI）
+  captureWindows.forEach((win) => {
+    if (win && !win.isDestroyed()) {
+      win.close();
+    }
+  });
+  captureWindows = [];
+
+  const displays = screen.getAllDisplays();
+
+  try {
+    const dataUrl = await captureWithAddon(rect, displays);
+    mainWindow.webContents.send('capture-result', { type: 'capture-result', dataUrl });
+  } catch (error) {
+    console.error('[capture-region] 截图失败:', error.message);
+    mainWindow.webContents.send('capture-result', {
+      type: 'capture-error',
+      error: error.message || '截图失败',
+    });
+  }
+});
+
+ipcMain.on('capture-esc', (event) => {
+  console.log('取消截图');
+  captureWindows.forEach((win) => {
+    if (win && !win.isDestroyed()) {
+      win.close();
+    }
+  });
+  captureWindows = [];
+  mainWindow.webContents.send('capture-result', { type: 'capture-esc', msg: '用户已取消截图' });
+});
+
+// 添加复制图片到剪贴板的IPC处理
+ipcMain.handle('copy-image-to-clipboard', async (event, dataUrl) => {
+  try {
+    console.log('复制图片到剪贴板...');
+
+    // 将 dataURL 转换为 Buffer
+    const base64Data = dataUrl.replace(/^data:image\/png;base64,/, '');
+    const imageBuffer = Buffer.from(base64Data, 'base64');
+
+    // 创建 NativeImage 对象
+    const { nativeImage, clipboard } = require('electron');
+    const image = nativeImage.createFromBuffer(imageBuffer);
+
+    // 复制到剪贴板
+    clipboard.writeImage(image);
+    console.log('图片已复制到剪贴板');
+
+    return { success: true, message: '图片已复制到剪贴板' };
+  } catch (error) {
+    console.error('复制到剪贴板失败:', error);
+    return { success: false, error: error.message };
+  }
+});
 
 // 添加跨显示器拖拽支持
 ipcMain.on('start-drag', (event, startInfo) => {
@@ -348,85 +272,9 @@ ipcMain.on('update-drag', (event, dragInfo) => {
   });
 });
 
-ipcMain.on('capture-region', (event, rect) => {
-  console.log('收到截图区域:', rect);
-  mainWindow.webContents.send('do-capture', rect);
-  
-  // 关闭所有截图窗口
-  captureWindows.forEach(win => {
-    if (win && !win.isDestroyed()) {
-      win.close();
-    }
-  });
-  captureWindows = [];
-});
-
-ipcMain.on('capture-complete', (event, dataUrl) => {
-  console.log('截图完成，发送结果到主窗口:', dataUrl);
-  mainWindow.webContents.send('capture-result', { type: 'capture-result', dataUrl });
-});
-
-ipcMain.on('capture-error', (event, errorMessage) => {
-  console.log('截图出错，发送错误信息到主窗口:', errorMessage);
-  mainWindow.webContents.send('capture-result', { type: 'capture-error', error: errorMessage });
-});
-
-ipcMain.on('capture-esc', (event) => {
-  console.log('取消截图');
-  // 关闭之前的截图窗口
-  captureWindows.forEach(win => {
-    if (win && !win.isDestroyed()) {
-      win.close();
-    }
-  });
-  captureWindows = [];
-  mainWindow.webContents.send('capture-result', { type: 'capture-esc', msg: '用户已取消截图' });
-});
-
-// 添加复制图片到剪贴板的IPC处理
-ipcMain.handle('copy-image-to-clipboard', async (event, dataUrl) => {
-  try {
-    console.log('复制图片到剪贴板...');
-    
-    // 将 dataURL 转换为 Buffer
-    const base64Data = dataUrl.replace(/^data:image\/png;base64,/, '');
-    const imageBuffer = Buffer.from(base64Data, 'base64');
-    
-    // 创建 NativeImage 对象
-    const { nativeImage, clipboard } = require('electron');
-    const image = nativeImage.createFromBuffer(imageBuffer);
-    
-    // 复制到剪贴板
-    clipboard.writeImage(image);
-    console.log('图片已复制到剪贴板');
-    
-    return { success: true, message: '图片已复制到剪贴板' };
-  } catch (error) {
-    console.error('复制到剪贴板失败:', error);
-    return { success: false, error: error.message };
-  }
-});
-
-// 获取所有屏幕组成的虚拟桌面范围
-// function getVirtualBounds() {
-//   const displays = screen.getAllDisplays();
-//   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-
-//   displays.forEach(d => {
-//     minX = Math.min(minX, d.bounds.x);
-//     minY = Math.min(minY, d.bounds.y);
-//     maxX = Math.max(maxX, d.bounds.x + d.bounds.width);
-//     maxY = Math.max(maxY, d.bounds.y + d.bounds.height);
-//   });
-
-//   return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
-// }
-
 // 注册截图快捷键
 function registerScreenshotShortcut() {
-  // 截图的快捷键（CommandOrControl 让 Windows 上自动映射为 Ctrl）
   const SCREENSHOT_SHORTCUT_KEY = 'CommandOrControl+Shift+K';
-  // 取消截图快捷键
   const ESC_SCREENSHOT_SHORTCUT_KEY = 'Esc';
 
   globalShortcut.register(SCREENSHOT_SHORTCUT_KEY, () => {
@@ -436,10 +284,9 @@ function registerScreenshotShortcut() {
   globalShortcut.register(ESC_SCREENSHOT_SHORTCUT_KEY, () => {
     ipcMain.emit('capture-esc');
   });
-
-  // if (!success) {
-  //   console.warn('⚠️[DevTools] Failed to register secret shortcut');
-  // } else {
-  //   console.log(`✅[DevTools] Succeed to register secret shortcut`);
-  // }
 }
+
+// 退出时释放 addon 会话
+app.on('will-quit', () => {
+  disposeScreenshotAddon();
+});
